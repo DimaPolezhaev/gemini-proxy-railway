@@ -9,7 +9,7 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0
 
 @app.route("/", methods=["GET"])
 def home():
-    return "✅ Gemini Proxy Server is running"
+    return "✅ Gemini Flask Proxy is running"
 
 @app.route("/", methods=["POST"])
 def generate():
@@ -20,7 +20,7 @@ def generate():
     if not prompt or not image_b64:
         return jsonify({"error": "Missing prompt or image_base64"}), 400
 
-    gemini_payload = {
+    payload = {
         "contents": [
             {
                 "role": "user",
@@ -41,13 +41,13 @@ def generate():
         res = requests.post(
             f"{GEMINI_URL}?key={GEMINI_API_KEY}",
             headers={"Content-Type": "application/json"},
-            json=gemini_payload,
-            timeout=20
+            json=payload,
+            timeout=30
         )
 
         if res.status_code == 200:
-            result = res.json()
-            text = result["candidates"][0]["content"]["parts"][0]["text"]
+            content = res.json()
+            text = content["candidates"][0]["content"]["parts"][0]["text"]
             return jsonify({"response": text})
         else:
             return jsonify({"error": "Gemini API error", "details": res.text}), res.status_code
