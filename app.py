@@ -3,6 +3,7 @@ import os
 import requests
 import logging
 import threading
+import time
 
 app = Flask(__name__)
 
@@ -14,21 +15,22 @@ logger = logging.getLogger(__name__)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
-# Периодическая активность (ping самого себя)
-def keep_awake():
-    try:
-        url = os.getenv("APP_URL")
-        if url:
-            requests.get(f"{url}/ping", timeout=5)
-            logger.info("⏰ Wakeup ping sent to self.")
-        else:
-            logger.warning("⚠️ APP_URL environment variable not set.")
-    except Exception as e:
-        logger.warning(f"Wakeup ping failed: {e}")
-    threading.Timer(300, keep_awake).start()  # каждые 5 минут
+# Периодическая активность (пинг к самому себе)
+def start_keep_alive():
+    def loop():
+        while True:
+            try:
+                url = os.getenv("APP_URL")
+                if url:
+                    requests.get(f"{url}/ping", timeout=5)
+                    logger.info("⏰ Wakeup ping sent to self.")
+                else:
+                    logger.warning("⚠️ APP_URL environment variable not set.")
+            except Exception as e:
+                logger.warning(f"Wakeup ping failed: {e}")
+            time.sleep(300)  # каждые 5 минут
 
-# Запускаем пинг после старта приложения
-keep_awake()
+    threading.Thread(target=loop, daemon=True).start()
 
 # CORS-ответ
 def cors_response(payload, status=200):
@@ -68,7 +70,7 @@ def generate():
             return cors_response({"error": "Prompt or image not provided"}, 400)
 
         if len(image_base64) > 4_000_000:
-            logger.warning("🚫 Изображение превышает 4MB")
+            logger.warning(f"🚫 Изображение превышает 4MB ({len(image_base64)} байт)")
             return cors_response({"error": "Image size exceeds 4MB"}, 413)
 
         gemini_payload = {
@@ -125,5 +127,6 @@ def generate():
 
 # Запуск сервера
 if __name__ == "__main__":
+    start_keep_alive()
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port)
