@@ -4,6 +4,7 @@ import requests
 import logging
 import threading
 import time
+import base64
 
 app = Flask(__name__)
 
@@ -54,7 +55,7 @@ def home():
         return cors_response({})
     return cors_response({"status": "✅ Gemini Proxy Server is running"})
 
-# Основной маршрут /generate
+# Эндпоинт для обработки изображений
 @app.route("/generate", methods=["POST", "OPTIONS"])
 def generate():
     if request.method == "OPTIONS":
@@ -90,7 +91,7 @@ def generate():
             ]
         }
 
-        logger.info("📡 Запрос к Gemini API...")
+        logger.info("📡 Запрос к Gemini API (изображение)...")
         response = requests.post(
             f"{GEMINI_URL}?key={GEMINI_API_KEY}",
             headers={"Content-Type": "application/json"},
@@ -123,6 +124,78 @@ def generate():
         return cors_response({"error": f"Request error: {str(e)}"}, 500)
     except Exception as e:
         logger.error(f"💥 Ошибка сервера: {e}")
+        return cors_response({"error": f"Server error: {str(e)}"}, 500)
+
+# Новый эндпоинт для обработки аудио
+@app.route("/generate_audio", methods=["POST", "OPTIONS"])
+def generate_audio():
+    if request.method == "OPTIONS":
+        return cors_response({})
+
+    try:
+        data = request.get_json(silent=True) or {}
+        prompt = data.get("prompt")
+        audio_base64 = data.get("audio_base64")
+
+        if not prompt or not audio_base64:
+            logger.warning("❗ Отсутствует prompt или audio_base64")
+            return cors_response({"error": "Prompt or audio not provided"}, 400)
+
+        if len(audio_base64) > 4_000_000:
+            logger.warning(f"🚫 Аудио превышает 4MB ({len(audio_base64)} байт)")
+            return cors_response({"error": "Audio size exceeds 4MB"}, 413)
+
+        # Предполагаем, что Gemini API поддерживает аудио
+        gemini_payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "inline_data": {
+                                "mime_type": "audio/aac",  # Формат, используемый клиентом
+                                "data": audio_base64
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+
+        logger.info("📡 Запрос к Gemini API (аудио)...")
+        response = requests.post(
+            f"{GEMINI_URL}?key={GEMINI_API_KEY}",
+            headers={"Content-Type": "application/json"},
+            json=gemini_payload,
+            timeout=15  # Увеличенный таймаут для аудио
+        )
+
+        logger.info(f"✅ Ответ от Gemini (аудио): {response.status_code}")
+        if response.status_code == 200:
+            result = response.json()
+            text = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+            if not text.strip():
+                return cors_response({"error": "Empty response from Gemini API"}, 502)
+            return cors_response({"response": text})
+        else:
+            return cors_response({
+                "error": "Gemini API error",
+                "status_code": response.status_code,
+                "details": response.text
+            }, response.status_code)
+
+    except requests.exceptions.Timeout:
+        logger.error("⏱ Таймаут запроса (аудио)")
+        return cors_response({"error": "Request to Gemini API timed out"}, 504)
+    except requests.exceptions.ConnectionError:
+        logger.error("❌ Ошибка подключения к Gemini API (аудио)")
+        return cors_response({"error": "Connection error to Gemini API"}, 502)
+    except requests.exceptions.RequestException as e:
+        logger.error(f"⚠️ Общая ошибка запроса (аудио): {e}")
+        return cors_response({"error": f"Request error: {str(e)}"}, 500)
+    except Exception as e:
+        logger.error(f"💥 Ошибка сервера (аудио): {e}")
         return cors_response({"error": f"Server error: {str(e)}"}, 500)
 
 # Запуск сервера
