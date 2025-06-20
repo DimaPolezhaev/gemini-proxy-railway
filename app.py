@@ -6,6 +6,8 @@ import threading
 import time
 import base64
 import tempfile
+import io
+from pydub import AudioSegment
 
 from birdnetlib.analyzer import Analyzer
 from birdnetlib import Recording
@@ -33,7 +35,7 @@ def start_keep_alive():
                     logger.warning("⚠️ APP_URL environment variable not set.")
             except Exception as e:
                 logger.warning(f"Wakeup ping failed: {e}")
-            time.sleep(300)  # каждые 5 минут
+            time.sleep(300)
 
     threading.Thread(target=loop, daemon=True).start()
 
@@ -130,7 +132,7 @@ def generate():
         logger.error(f"💥 Ошибка сервера: {e}")
         return cors_response({"error": f"Server error: {str(e)}"}, 500)
 
-# Эндпоинт для обработки аудио (заменён на birdnetlib)
+# Эндпоинт для обработки аудио с конвертацией AAC в WAV
 @app.route("/generate_audio", methods=["POST", "OPTIONS"])
 def generate_audio():
     if request.method == "OPTIONS":
@@ -144,10 +146,12 @@ def generate_audio():
             logger.warning("❗ Отсутствует audio_base64")
             return cors_response({"error": "audio_base64 not provided"}, 400)
 
+        # Декодируем и конвертируем в WAV
         audio_bytes = base64.b64decode(audio_base64)
+        audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format="aac")
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_audio:
-            temp_audio.write(audio_bytes)
+            audio.export(temp_audio.name, format="wav")
             temp_audio_path = temp_audio.name
 
         try:
