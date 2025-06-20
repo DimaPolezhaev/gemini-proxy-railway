@@ -132,7 +132,6 @@ def generate_audio():
 
         try:
             analyzer = Analyzer()
-            analyzer.load_default_model()  # важно в >=0.18
             recording = Recording(analyzer=analyzer, file_path=temp_audio_path)
             recording.analyze()
         finally:
