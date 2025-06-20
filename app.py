@@ -151,7 +151,7 @@ def generate_audio():
         audio = AudioSegment.from_file(io.BytesIO(audio_bytes), format="aac")
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_audio:
-            audio.export(temp_audio.name, format="wav")
+            audio.export(temp_audio.name, format="wav", parameters=["-acodec", "pcm_s16le", "-ar", "16000"])
             temp_audio_path = temp_audio.name
 
         try:
