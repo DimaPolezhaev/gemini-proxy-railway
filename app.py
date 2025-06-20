@@ -132,8 +132,8 @@ def generate_audio():
 
         try:
             analyzer = Analyzer()
-            recording = Recording(temp_audio_path, analyzer)
-            recording.analyze()
+            recording = Recording(temp_audio_path)
+            recording.analyze(analyzer)
         finally:
             os.remove(temp_audio_path)
 
