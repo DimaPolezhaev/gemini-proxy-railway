@@ -1,20 +1,14 @@
+# Web-сервер
 Flask==2.3.2
 requests==2.31.0
 gunicorn==20.1.0
+
+# Конвертация AAC → WAV
 pydub
 ffmpeg-python
 
-# BirdNET
-birdnetlib==0.18.0
-
-# Аудио-зависимости
-librosa==0.10.1
-soundfile==0.12.1
+# BirdNET-Analyzer требует:
 numpy==1.24.4
 scipy==1.10.1
-
-# TensorFlow — обязательный компонент
-tensorflow==2.15.0
-
-# ffmpeg поддержка (librosa > audioread > ffmpeg)
-audioread==3.0.0
+tqdm
+pandas
