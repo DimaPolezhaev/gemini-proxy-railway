@@ -66,25 +66,27 @@ def generate_audio():
     try:
         audio_bytes = base64.b64decode(audio_b64)
         with tempfile.TemporaryDirectory() as tmpdir:
-            # Сохраняем аудио с правильным расширением .m4a (если нужно поменяй на .aac)
-            input_path = os.path.join(tmpdir, "input.m4a")
+            aac_path = os.path.join(tmpdir, "input.aac")
             wav_path = os.path.join(tmpdir, "input.wav")
-            with open(input_path, "wb") as f:
+            with open(aac_path, "wb") as f:
                 f.write(audio_bytes)
 
-            # Конвертация в WAV 16kHz PCM 16-bit
-            sound = AudioSegment.from_file(input_path, format="mp4")
+            # Конвертация AAC → WAV 16kHz
+            sound = AudioSegment.from_file(aac_path, format="aac")
             sound.export(wav_path, format="wav", parameters=["-acodec", "pcm_s16le", "-ar", "16000"])
 
+            # Определим параметры
             week = datetime.utcnow().isocalendar().week
-            lat, lon = 0.0, 0.0  # заменить при необходимости
-
+            lat, lon = 0.0, 0.0
             output_dir = os.path.join(tmpdir, "out")
             os.makedirs(output_dir, exist_ok=True)
 
-            # Запуск BirdNET-Analyzer с захватом вывода
+            # Путь к cli.py
+            cli_path = os.path.join(os.path.dirname(__file__), "BirdNET-Analyzer", "birdnet_analyzer", "cli.py")
+
+            # Запуск BirdNET
             result = subprocess.run([
-                "python3", "-m", "birdnet_analyzer.cli",
+                "python3", cli_path,
                 "--input", wav_path,
                 "--output", output_dir,
                 "--lat", str(lat),
@@ -95,14 +97,11 @@ def generate_audio():
             ], capture_output=True, text=True)
 
             if result.returncode != 0:
-                logger.error(f"BirdNET-Analyzer stdout:\n{result.stdout}")
-                logger.error(f"BirdNET-Analyzer stderr:\n{result.stderr}")
-                return cors_response({
-                    "error": "BirdNET-Analyzer execution failed",
-                    "details": result.stderr.strip()
-                }, 500)
+                logger.error(f"BirdNET-Analyzer failed:\n{result.stderr}")
+                return cors_response({"error": "BirdNET-Analyzer execution failed", "details": result.stderr}, 500)
 
-            csv_file = os.path.join(output_dir, os.path.basename(wav_path) + "_Results.csv")
+            # Обработка результата
+            csv_file = os.path.join(output_dir, "input.wav_Results.csv")
             if not os.path.exists(csv_file):
                 return cors_response({"response": "⚠️ No detections or audio too short/noisy."})
 
@@ -122,10 +121,10 @@ def generate_audio():
             return cors_response({"response": response_text})
 
     except subprocess.CalledProcessError as e:
-        logger.error(f"Analyzer failed with CalledProcessError: {e}")
+        logger.error(f"Analyzer crashed: {e}")
         return cors_response({"error": "BirdNET-Analyzer execution failed"}, 500)
     except Exception as e:
-        logger.error(f"Audio processing error: {e}")
+        logger.error(f"Audio error: {e}")
         return cors_response({"error": f"Server error: {e}"}, 500)
 
 if __name__ == "__main__":
