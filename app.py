@@ -14,7 +14,7 @@ from flask import Flask, request, jsonify, make_response
 from pydub import AudioSegment
 
 # Указываем путь к папке, где лежит birdnet_analyzer (а не сам модуль)
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "path", "to", "BirdNET-Analyzer"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "BirdNET-Analyzer"))
 
 app = Flask(__name__)
 
