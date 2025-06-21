@@ -13,7 +13,7 @@ from datetime import datetime
 from flask import Flask, request, jsonify, make_response
 from pydub import AudioSegment
 
-# Указываем путь к папке, где лежит birdnet_analyzer (а не сам модуль)
+# Укажи свой реальный путь к папке BirdNET-Analyzer, если нужно
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "BirdNET-Analyzer"))
 
 app = Flask(__name__)
@@ -53,48 +53,6 @@ def home():
         return cors_response({})
     return cors_response({"status": "✅ Server is running"})
 
-@app.route("/generate", methods=["POST", "OPTIONS"])
-def generate_image():
-    if request.method == "OPTIONS":
-        return cors_response({})
-
-    data = request.get_json(silent=True) or {}
-    prompt = data.get("prompt")
-    image_b64 = data.get("image_base64")
-    if not prompt or not image_b64:
-        return cors_response({"error": "Prompt or image not provided"}, 400)
-    if len(image_b64) > 4_000_000:
-        return cors_response({"error": "Image size exceeds 4MB"}, 413)
-
-    payload = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [
-                    {"text": prompt},
-                    {"inline_data": {"mime_type": "image/jpeg", "data": image_b64}}
-                ]
-            }
-        ]
-    }
-    try:
-        resp = requests.post(
-            f"{os.getenv('GEMINI_URL', 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent')}?key={os.getenv('GEMINI_API_KEY')}",
-            headers={"Content-Type": "application/json"},
-            json=payload,
-            timeout=7
-        )
-        if resp.status_code != 200:
-            return cors_response({"error": "Gemini API error", "details": resp.text}, resp.status_code)
-        result = resp.json()
-        text = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-        if not text.strip():
-            return cors_response({"error": "Empty response from Gemini"}, 502)
-        return cors_response({"response": text})
-    except Exception as e:
-        logger.error(f"Image error: {e}")
-        return cors_response({"error": f"Server error: {e}"}, 500)
-
 @app.route("/generate_audio", methods=["POST", "OPTIONS"])
 def generate_audio():
     if request.method == "OPTIONS":
@@ -108,32 +66,43 @@ def generate_audio():
     try:
         audio_bytes = base64.b64decode(audio_b64)
         with tempfile.TemporaryDirectory() as tmpdir:
-            m4a_path = os.path.join(tmpdir, "input.m4a")
+            # Сохраняем аудио с правильным расширением .m4a (если нужно поменяй на .aac)
+            input_path = os.path.join(tmpdir, "input.m4a")
             wav_path = os.path.join(tmpdir, "input.wav")
-            with open(m4a_path, "wb") as f:
+            with open(input_path, "wb") as f:
                 f.write(audio_bytes)
 
-            sound = AudioSegment.from_file(m4a_path, format="mp4")
+            # Конвертация в WAV 16kHz PCM 16-bit
+            sound = AudioSegment.from_file(input_path, format="mp4")
             sound.export(wav_path, format="wav", parameters=["-acodec", "pcm_s16le", "-ar", "16000"])
 
             week = datetime.utcnow().isocalendar().week
-            lat, lon = 0.0, 0.0
+            lat, lon = 0.0, 0.0  # заменить при необходимости
 
             output_dir = os.path.join(tmpdir, "out")
             os.makedirs(output_dir, exist_ok=True)
 
-            subprocess.run([
+            # Запуск BirdNET-Analyzer с захватом вывода
+            result = subprocess.run([
                 "python3", "-m", "birdnet_analyzer.cli",
-                "--input", tmpdir,
+                "--input", wav_path,
                 "--output", output_dir,
                 "--lat", str(lat),
                 "--lon", str(lon),
                 "--week", str(week),
                 "--language", "ru",
                 "--min_conf", "0.25"
-            ], check=True)
+            ], capture_output=True, text=True)
 
-            csv_file = os.path.join(output_dir, "input.wav_Results.csv")
+            if result.returncode != 0:
+                logger.error(f"BirdNET-Analyzer stdout:\n{result.stdout}")
+                logger.error(f"BirdNET-Analyzer stderr:\n{result.stderr}")
+                return cors_response({
+                    "error": "BirdNET-Analyzer execution failed",
+                    "details": result.stderr.strip()
+                }, 500)
+
+            csv_file = os.path.join(output_dir, os.path.basename(wav_path) + "_Results.csv")
             if not os.path.exists(csv_file):
                 return cors_response({"response": "⚠️ No detections or audio too short/noisy."})
 
@@ -147,16 +116,16 @@ def generate_audio():
             best = max(rows, key=lambda r: float(r["Confidence"]))
             response_text = (
                 f"1. Вид: {best['Common Name']} ({best['Scientific Name']})\n"
-                f"2. Уверенность: {round(float(best['Confidence'])*100,1)}%\n"
+                f"2. Уверенность: {round(float(best['Confidence']) * 100, 1)}%\n"
                 f"3. Источник: BirdNET-Analyzer"
             )
             return cors_response({"response": response_text})
 
     except subprocess.CalledProcessError as e:
-        logger.error(f"Analyzer failed: {e}")
+        logger.error(f"Analyzer failed with CalledProcessError: {e}")
         return cors_response({"error": "BirdNET-Analyzer execution failed"}, 500)
     except Exception as e:
-        logger.error(f"Audio error: {e}")
+        logger.error(f"Audio processing error: {e}")
         return cors_response({"error": f"Server error: {e}"}, 500)
 
 if __name__ == "__main__":
