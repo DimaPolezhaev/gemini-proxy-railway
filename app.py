@@ -108,12 +108,12 @@ def generate_audio():
     try:
         audio_bytes = base64.b64decode(audio_b64)
         with tempfile.TemporaryDirectory() as tmpdir:
-            aac_path = os.path.join(tmpdir, "input.aac")
+            m4a_path = os.path.join(tmpdir, "input.m4a")
             wav_path = os.path.join(tmpdir, "input.wav")
-            with open(aac_path, "wb") as f:
+            with open(m4a_path, "wb") as f:
                 f.write(audio_bytes)
 
-            sound = AudioSegment.from_file(aac_path, format="aac")
+            sound = AudioSegment.from_file(m4a_path, format="mp4")
             sound.export(wav_path, format="wav", parameters=["-acodec", "pcm_s16le", "-ar", "16000"])
 
             week = datetime.utcnow().isocalendar().week
