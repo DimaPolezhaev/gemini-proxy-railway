@@ -13,16 +13,14 @@ from datetime import datetime
 from flask import Flask, request, jsonify, make_response
 from pydub import AudioSegment
 
-# Вставляем в PYTHONPATH путь к папке BirdNET-Analyzer
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "BirdNET-Analyzer"))
+# Указываем путь к папке, где лежит birdnet_analyzer (а не сам модуль)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "path", "to", "BirdNET-Analyzer"))
 
 app = Flask(__name__)
 
-# Логгер
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Настройки CORS
 def cors_response(payload, status=200):
     resp = make_response(jsonify(payload), status)
     resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -30,7 +28,6 @@ def cors_response(payload, status=200):
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
     return resp
 
-# Keep-alive для Railway
 def start_keep_alive():
     def loop():
         while True:
@@ -109,7 +106,6 @@ def generate_audio():
         return cors_response({"error": "audio_base64 not provided"}, 400)
 
     try:
-        # Декодируем и сохраняем AAC
         audio_bytes = base64.b64decode(audio_b64)
         with tempfile.TemporaryDirectory() as tmpdir:
             aac_path = os.path.join(tmpdir, "input.aac")
@@ -117,15 +113,12 @@ def generate_audio():
             with open(aac_path, "wb") as f:
                 f.write(audio_bytes)
 
-            # Конвертируем в WAV PCM16 16kHz
             sound = AudioSegment.from_file(aac_path, format="aac")
             sound.export(wav_path, format="wav", parameters=["-acodec", "pcm_s16le", "-ar", "16000"])
 
-            # Параметры анализа
             week = datetime.utcnow().isocalendar().week
-            lat, lon = 0.0, 0.0  # при необходимости заменить реальными координатами
+            lat, lon = 0.0, 0.0
 
-            # Запуск BirdNET-Analyzer
             output_dir = os.path.join(tmpdir, "out")
             os.makedirs(output_dir, exist_ok=True)
 
@@ -140,7 +133,6 @@ def generate_audio():
                 "--min_conf", "0.25"
             ], check=True)
 
-            # Чтение CSV результата
             csv_file = os.path.join(output_dir, "input.wav_Results.csv")
             if not os.path.exists(csv_file):
                 return cors_response({"response": "⚠️ No detections or audio too short/noisy."})
