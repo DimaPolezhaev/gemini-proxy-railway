@@ -1,8 +1,5 @@
-# Web-сервер
 Flask==2.3.2
 requests==2.31.0
 gunicorn==20.1.0
-
-# Конвертация AAC → WAV
-pydub
-ffmpeg-python
+pydub==0.25.1
+ffmpeg-python==0.2.0
