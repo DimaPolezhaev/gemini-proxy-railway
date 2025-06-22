@@ -80,7 +80,7 @@ def generate_image():
     }
 
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-pro:generateContent?key={GEMINI_API_KEY}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
         resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
 
         if resp.status_code != 200:
@@ -116,7 +116,7 @@ def generate_audio():
 
         with tempfile.TemporaryDirectory() as tmpdir:
             aac_path = os.path.join(tmpdir, "input.aac")
-            wav_path = os.path.join(tmpdir, "input.wav")
+            flac_path = os.path.join(tmpdir, "input.flac")
             with open(aac_path, "wb") as f:
                 f.write(audio_bytes)
 
@@ -131,14 +131,14 @@ def generate_audio():
                     return cors_response({"error": "⚠️ Невозможно распознать формат аудио"}, 415)
 
             sound = sound.set_channels(1).set_frame_rate(16000).set_sample_width(2)
-            sound.export(wav_path, format="wav")
+            sound.export(flac_path, format="flac")
 
             # BirdWeather API call
             timestamp = datetime.now(timezone.utc).isoformat()
             url = f"https://app.birdweather.com/api/v1/stations/{BIRDWEATHER_STATION_TOKEN}/soundscapes?timestamp={timestamp}"
 
-            with open(wav_path, "rb") as f:
-                files = {"audio": ("input.wav", f, "audio/wav")}
+            with open(flac_path, "rb") as f:
+                files = {"audio": ("input.flac", f, "audio/flac")}
                 response = requests.post(url, files=files, timeout=15)
 
             if response.status_code != 200:
