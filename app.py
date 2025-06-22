@@ -111,13 +111,25 @@ def generate_audio():
     try:
         audio_bytes = base64.b64decode(audio_b64)
 
+        if len(audio_bytes) < 500:
+            return cors_response({"error": "⚠️ Получен пустой или слишком короткий аудиофайл"}, 400)
+
         with tempfile.TemporaryDirectory() as tmpdir:
             aac_path = os.path.join(tmpdir, "input.aac")
             wav_path = os.path.join(tmpdir, "input.wav")
             with open(aac_path, "wb") as f:
                 f.write(audio_bytes)
 
-            sound = AudioSegment.from_file(aac_path, format="aac")
+            try:
+                sound = AudioSegment.from_file(aac_path, format="aac")
+            except Exception as e:
+                logger.warning(f"AAC decode failed, trying m4a: {e}")
+                try:
+                    sound = AudioSegment.from_file(aac_path, format="m4a")
+                except Exception as e:
+                    logger.error(f"Failed to decode audio: {e}")
+                    return cors_response({"error": "⚠️ Невозможно распознать формат аудио"}, 415)
+
             sound = sound.set_channels(1).set_frame_rate(16000).set_sample_width(2)
             sound.export(wav_path, format="wav")
 
