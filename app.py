@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 # === ENV variables ===
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 BIRDWEATHER_STATION_TOKEN = os.getenv("BIRDWEATHER_STATION_TOKEN")
+BASE_URL = os.getenv("BIRDWEATHER_API_URL", "https://app.birdweather.com/api/v1")
 
 # === Utility ===
 def cors_response(payload, status=200):
@@ -69,31 +70,22 @@ def generate_image():
 
     payload = {
         "contents": [
-            {
-                "role": "user",
-                "parts": [
-                    {"text": prompt},
-                    {"inline_data": {"mime_type": "image/jpeg", "data": image_b64}}
-                ]
-            }
+            {"role": "user", "parts": [
+                {"text": prompt},
+                {"inline_data": {"mime_type": "image/jpeg", "data": image_b64}}
+            ]}
         ]
     }
-
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
         resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
-
         if resp.status_code != 200:
             return cors_response({"error": "Gemini API error", "details": resp.text}, resp.status_code)
-
         result = resp.json()
         text = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-
         if not text.strip():
             return cors_response({"error": "Empty response from Gemini"}, 502)
-
         return cors_response({"response": text})
-
     except Exception as e:
         logger.error(f"Gemini error: {e}")
         return cors_response({"error": f"Server error: {e}"}, 500)
@@ -102,61 +94,55 @@ def generate_image():
 def generate_audio():
     if request.method == "OPTIONS":
         return cors_response({})
-
     data = request.get_json(silent=True) or {}
     audio_b64 = data.get("audio_base64")
     if not audio_b64:
         return cors_response({"error": "audio_base64 not provided"}, 400)
-
     try:
         audio_bytes = base64.b64decode(audio_b64)
-
         if len(audio_bytes) < 500:
-            return cors_response({"error": "⚠️ Получен пустой или слишком короткий аудиофайл"}, 400)
+            return cors_response({"error": "⚠️ Audio too short or empty"}, 400)
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            aac_path = os.path.join(tmpdir, "input.aac")
+            in_path = os.path.join(tmpdir, "input.aac")
             flac_path = os.path.join(tmpdir, "input.flac")
-            with open(aac_path, "wb") as f:
+            with open(in_path, "wb") as f:
                 f.write(audio_bytes)
 
+            # decode AAC or fallback to m4a
             try:
-                sound = AudioSegment.from_file(aac_path, format="aac")
-            except Exception as e:
-                logger.warning(f"AAC decode failed, trying m4a: {e}")
-                try:
-                    sound = AudioSegment.from_file(aac_path, format="m4a")
-                except Exception as e:
-                    logger.error(f"Failed to decode audio: {e}")
-                    return cors_response({"error": "⚠️ Невозможно распознать формат аудио"}, 415)
+                audio = AudioSegment.from_file(in_path, format="aac")
+            except Exception:
+                audio = AudioSegment.from_file(in_path, format="m4a")
 
-            sound = sound.set_channels(1).set_frame_rate(16000).set_sample_width(2)
-            sound.export(flac_path, format="flac")
+            audio = audio.set_channels(1).set_frame_rate(16000).set_sample_width(2)
+            audio.export(flac_path, format="flac")
 
-            # BirdWeather API call
-            timestamp = datetime.now(timezone.utc).isoformat()
-            url = f"https://app.birdweather.com/api/v1/stations/{BIRDWEATHER_STATION_TOKEN}/soundscapes?timestamp={timestamp}"
-
+            # POST soundscape
+            ts = datetime.now(timezone.utc).isoformat()
+            upload_url = f"{BASE_URL}/stations/{BIRDWEATHER_STATION_TOKEN}/soundscapes?timestamp={ts}"
             with open(flac_path, "rb") as f:
-                files = {"audio": ("input.flac", f, "audio/flac")}
-                response = requests.post(url, files=files, timeout=15)
+                files = {"audio": ("input.flac", f, "audio/flac")}  
+                resp = requests.post(upload_url, files=files, timeout=15)
 
-            if response.status_code != 200:
-                logger.error(f"BirdWeather API error: {response.text}")
-                return cors_response({"error": "BirdWeather API failed", "details": response.text}, 500)
+            # Accept 200 or 201
+            if resp.status_code not in (200, 201):
+                return cors_response({"error": "Upload failed", "details": resp.text}, 500)
 
-            result = response.json()
-            detections = result.get("detections", [])
+            # Fetch detections
+            det_url = f"{BASE_URL}/stations/{BIRDWEATHER_STATION_TOKEN}/detections?limit=1"
+            det_resp = requests.get(det_url, timeout=10)
+            if det_resp.status_code != 200:
+                return cors_response({"error": "Fetch detections failed", "details": det_resp.text}, 500)
 
-            if not detections:
-                return cors_response({"response": "⚠️ На аудио не обнаружено голосов птиц."})
+            det_json = det_resp.json().get("detections", [])
+            if not det_json:
+                return cors_response({"response": "⚠️ No bird sounds detected."})
 
-            best = max(detections, key=lambda d: float(d.get("confidence", 0)))
-            name = best.get("common_name", "Неизвестно")
-            conf = round(float(best.get("confidence", 0)) * 100, 1)
-
+            best = max(det_json, key=lambda d: d.get("confidence", 0))
+            name = best.get("species", {}).get("common_name", "Unknown")
+            conf = round(best.get("confidence", 0) * 100, 1)
             return cors_response({"response": f"1. Вид: {name}\n2. Уверенность: {conf}%\n3. Источник: BirdWeather"})
-
     except Exception as e:
         logger.error(f"Audio error: {e}")
         return cors_response({"error": f"Server error: {e}"}, 500)
