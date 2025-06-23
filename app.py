@@ -1,3 +1,4 @@
+
 import os
 import base64
 import requests
@@ -7,17 +8,15 @@ import time
 import tempfile
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify, make_response
-from pydub import AudioSegment
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# === ENV ===
+# === ENV variables ===
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 BIRDWEATHER_STATION_TOKEN = os.getenv("BIRDWEATHER_STATION_TOKEN")
 
-# === CORS ===
 def cors_response(payload, status=200):
     resp = make_response(jsonify(payload), status)
     resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -25,7 +24,6 @@ def cors_response(payload, status=200):
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
     return resp
 
-# === Ping (для Railway) ===
 def start_keep_alive():
     def loop():
         while True:
@@ -38,8 +36,6 @@ def start_keep_alive():
                     logger.warning(f"Wakeup failed: {e}")
             time.sleep(300)
     threading.Thread(target=loop, daemon=True).start()
-
-# === Routes ===
 
 @app.route("/ping", methods=["GET", "OPTIONS"])
 def ping():
@@ -112,16 +108,9 @@ def generate_audio():
         audio_bytes = base64.b64decode(audio_b64)
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            wav_path = os.path.join(tmpdir, "input.wav")
             flac_path = os.path.join(tmpdir, "input.flac")
-
-            # Сохраняем .wav
-            with open(wav_path, "wb") as f:
+            with open(flac_path, "wb") as f:
                 f.write(audio_bytes)
-
-            # Конвертируем WAV → FLAC
-            sound = AudioSegment.from_wav(wav_path)
-            sound.export(flac_path, format="flac")
 
             timestamp = datetime.now(timezone.utc).isoformat()
             url = f"https://app.birdweather.com/api/v1/stations/{BIRDWEATHER_STATION_TOKEN}/soundscapes?timestamp={timestamp}"
@@ -144,7 +133,7 @@ def generate_audio():
             name = best.get("common_name", "Неизвестно")
             conf = round(float(best.get("confidence", 0)) * 100, 1)
 
-            return cors_response({"response": f"1. Вид: {name}\\n2. Уверенность: {conf}%\\n3. Источник: BirdWeather"})
+            return cors_response({"response": f"1. Вид: {name}\n2. Уверенность: {conf}%\n3. Источник: BirdWeather"})
 
     except Exception as e:
         logger.error(f"Audio error: {e}")
