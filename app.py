@@ -5,12 +5,8 @@ import requests
 import logging
 import threading
 import time
-import tempfile
 import tarfile
-import subprocess
-from datetime import datetime, timezone
 from flask import Flask, request, jsonify, make_response
-from pydub import AudioSegment
 
 # === Автоматическая загрузка ffmpeg ===
 def ensure_ffmpeg():
@@ -41,6 +37,7 @@ def ensure_ffmpeg():
 
     # Обновляем PATH
     os.environ["PATH"] = os.path.abspath("ffmpeg") + os.pathsep + os.environ["PATH"]
+
 ensure_ffmpeg()
 
 # === Flask-приложение ===
@@ -50,7 +47,6 @@ logger = logging.getLogger(__name__)
 
 # === Переменные окружения ===
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-BIRDWEATHER_STATION_TOKEN = os.getenv("BIRDWEATHER_STATION_TOKEN")
 
 # === CORS ===
 def cors_response(payload, status=200):
@@ -134,66 +130,6 @@ def generate_image():
 
     except Exception as e:
         logger.error(f"Gemini error: {e}")
-        return cors_response({"error": f"Server error: {e}"}, 500)
-
-@app.route("/generate_audio", methods=["POST", "OPTIONS"])
-def generate_audio():
-    if request.method == "OPTIONS":
-        return cors_response({})
-
-    data = request.get_json(silent=True) or {}
-    audio_b64 = data.get("audio_base64")
-    if not audio_b64:
-        return cors_response({"error": "audio_base64 not provided"}, 400)
-
-    try:
-        audio_bytes = base64.b64decode(audio_b64)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Сохраняем полученный файл как WAV
-            wav_input_path = os.path.join(tmpdir, "input.wav")
-            with open(wav_input_path, "wb") as f:
-                f.write(audio_bytes)
-
-            # Конвертируем WAV → FLAC
-            from pydub import AudioSegment
-            flac_path = os.path.join(tmpdir, "converted.flac")
-            sound = AudioSegment.from_file(wav_input_path, format="wav")
-            sound = sound.set_channels(1).set_frame_rate(16000).set_sample_width(2)
-            sound.export(flac_path, format="flac")
-
-            # Отправляем в BirdWeather
-            from datetime import datetime, timezone
-            BIRDWEATHER_TOKEN = os.getenv("BIRDWEATHER_STATION_TOKEN")
-            timestamp = datetime.now(timezone.utc).isoformat()
-            url = f"https://app.birdweather.com/api/v1/stations/{BIRDWEATHER_TOKEN}/soundscapes?timestamp={timestamp}"
-
-            with open(flac_path, "rb") as f:
-                files = {"audio": ("converted.flac", f, "audio/flac")}
-                response = requests.post(url, files=files, timeout=15)
-
-            if response.status_code != 200:
-                return cors_response({
-                    "error": "BirdWeather API failed",
-                    "details": response.text
-                }, 500)
-
-            result = response.json()
-            detections = result.get("detections", [])
-
-            if not detections:
-                return cors_response({"response": "⚠️ На аудиозаписи не найдено голосов птиц."})
-
-            best = max(detections, key=lambda d: float(d.get("confidence", 0)))
-            name = best.get("common_name", "Неизвестно")
-            conf = round(float(best.get("confidence", 0)) * 100, 1)
-
-            return cors_response({
-                "response": f"1. Вид: {name}\n2. Уверенность: {conf}%\n3. Источник: BirdWeather"
-            })
-
-    except Exception as e:
-        logger.error(f"Audio error: {e}")
         return cors_response({"error": f"Server error: {e}"}, 500)
 
 if __name__ == "__main__":
