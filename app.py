@@ -9,12 +9,34 @@ import tempfile
 import subprocess
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify, make_response
+from pydub import AudioSegment
 
+# === Автоматическая загрузка ffmpeg ===
+def ensure_ffmpeg():
+    if not os.path.exists("ffmpeg/ffmpeg"):
+        print("⬇️  Скачиваем ffmpeg...")
+        os.makedirs("ffmpeg", exist_ok=True)
+        subprocess.run([
+            "wget",
+            "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz",
+            "-O",
+            "ffmpeg.tar.xz"
+        ], check=True)
+        subprocess.run(["tar", "-xf", "ffmpeg.tar.xz", "-C", "ffmpeg", "--strip-components=1"], check=True)
+        os.remove("ffmpeg.tar.xz")
+        print("✅ ffmpeg установлен")
+
+    # Обновляем PATH
+    os.environ["PATH"] = os.path.abspath("ffmpeg") + os.pathsep + os.environ["PATH"]
+
+ensure_ffmpeg()
+
+# === Flask-приложение ===
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# === ENV VARIABLES ===
+# === Переменные окружения ===
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 BIRDWEATHER_STATION_TOKEN = os.getenv("BIRDWEATHER_STATION_TOKEN")
 
@@ -26,7 +48,7 @@ def cors_response(payload, status=200):
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
     return resp
 
-# === KEEP-ALIVE ===
+# === Keep-alive для Railway ===
 def start_keep_alive():
     def loop():
         while True:
@@ -40,7 +62,8 @@ def start_keep_alive():
             time.sleep(300)
     threading.Thread(target=loop, daemon=True).start()
 
-# === ROUTES ===
+# === Роуты ===
+
 @app.route("/ping", methods=["GET", "OPTIONS"])
 def ping():
     if request.method == "OPTIONS":
@@ -67,31 +90,31 @@ def generate_image():
     if len(image_b64) > 4_000_000:
         return cors_response({"error": "Image size exceeds 4MB"}, 413)
 
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": prompt},
+                    {"inline_data": {
+                        "mime_type": "image/jpeg",
+                        "data": image_b64
+                    }}
+                ]
+            }
+        ]
+    }
+
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-        payload = {
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [
-                        {"text": prompt},
-                        {
-                            "inline_data": {
-                                "mime_type": "image/jpeg",
-                                "data": image_b64
-                            }
-                        }
-                    ]
-                }
-            ]
-        }
+        resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
 
-        resp = requests.post(url, headers={"Content-Type": "application/json"}, json=payload, timeout=10)
         if resp.status_code != 200:
             return cors_response({"error": "Gemini API error", "details": resp.text}, resp.status_code)
 
         result = resp.json()
         text = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+
         if not text.strip():
             return cors_response({"error": "Empty response from Gemini"}, 502)
 
@@ -115,24 +138,18 @@ def generate_audio():
         audio_bytes = base64.b64decode(audio_b64)
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            wav_path = os.path.join(tmpdir, "input.wav")
+            aac_path = os.path.join(tmpdir, "input.aac")
             flac_path = os.path.join(tmpdir, "input.flac")
 
-            # Сохраняем WAV
-            with open(wav_path, "wb") as f:
+            with open(aac_path, "wb") as f:
                 f.write(audio_bytes)
 
-            # Конвертация WAV → FLAC через ffmpeg
-            subprocess.run([
-                "ffmpeg", "-y",
-                "-i", wav_path,
-                "-ac", "1",
-                "-ar", "16000",
-                "-sample_fmt", "s16",
-                flac_path
-            ], check=True)
+            # Конвертация в FLAC
+            sound = AudioSegment.from_file(aac_path, format="aac")
+            sound = sound.set_channels(1).set_frame_rate(16000).set_sample_width(2)
+            sound.export(flac_path, format="flac")
 
-            # Отправка в BirdWeather
+            # BirdWeather API
             timestamp = datetime.now(timezone.utc).isoformat()
             url = f"https://app.birdweather.com/api/v1/stations/{BIRDWEATHER_STATION_TOKEN}/soundscapes?timestamp={timestamp}"
 
@@ -141,16 +158,14 @@ def generate_audio():
                 response = requests.post(url, files=files, timeout=15)
 
             if response.status_code != 200:
-                return cors_response({
-                    "error": "BirdWeather API failed",
-                    "details": response.text
-                }, 500)
+                logger.error(f"BirdWeather API error: {response.text}")
+                return cors_response({"error": "BirdWeather API failed", "details": response.text}, 500)
 
             result = response.json()
             detections = result.get("detections", [])
 
             if not detections:
-                return cors_response({"response": "⚠️ Голос птицы не обнаружен."})
+                return cors_response({"response": "⚠️ На аудио не обнаружено голосов птиц."})
 
             best = max(detections, key=lambda d: float(d.get("confidence", 0)))
             name = best.get("common_name", "Неизвестно")
@@ -160,14 +175,10 @@ def generate_audio():
                 "response": f"1. Вид: {name}\n2. Уверенность: {conf}%\n3. Источник: BirdWeather"
             })
 
-    except subprocess.CalledProcessError as e:
-        logger.error(f"ffmpeg error: {e}")
-        return cors_response({"error": "Audio conversion failed", "details": str(e)}, 500)
     except Exception as e:
         logger.error(f"Audio error: {e}")
         return cors_response({"error": f"Server error: {e}"}, 500)
 
-# === RUN SERVER ===
 if __name__ == "__main__":
     start_keep_alive()
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
