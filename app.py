@@ -5,11 +5,9 @@ import logging
 import threading
 import time
 import tempfile
-import subprocess
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify, make_response
 from pydub import AudioSegment
-from pydub.utils import which
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -18,10 +16,6 @@ logger = logging.getLogger(__name__)
 # === ENV ===
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 BIRDWEATHER_STATION_TOKEN = os.getenv("BIRDWEATHER_STATION_TOKEN")
-BASE_URL = os.getenv("BIRDWEATHER_API_URL", "https://app.birdweather.com/api/v1")
-
-# Ensure pydub finds ffmpeg
-AudioSegment.converter = which("ffmpeg")
 
 # === CORS ===
 def cors_response(payload, status=200):
@@ -31,6 +25,7 @@ def cors_response(payload, status=200):
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
     return resp
 
+# === Ping (для Railway) ===
 def start_keep_alive():
     def loop():
         while True:
@@ -44,7 +39,8 @@ def start_keep_alive():
             time.sleep(300)
     threading.Thread(target=loop, daemon=True).start()
 
-# === ROUTES ===
+# === Routes ===
+
 @app.route("/ping", methods=["GET", "OPTIONS"])
 def ping():
     if request.method == "OPTIONS":
@@ -86,6 +82,7 @@ def generate_image():
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
         resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+
         if resp.status_code != 200:
             return cors_response({"error": "Gemini API error", "details": resp.text}, resp.status_code)
 
@@ -113,51 +110,41 @@ def generate_audio():
 
     try:
         audio_bytes = base64.b64decode(audio_b64)
-        if len(audio_bytes) < 500:
-            return cors_response({"error": "⚠️ Audio too short or empty"}, 400)
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            aac_path = os.path.join(tmpdir, "input.aac")
-            wav_path = os.path.join(tmpdir, "intermediate.wav")
+            wav_path = os.path.join(tmpdir, "input.wav")
             flac_path = os.path.join(tmpdir, "input.flac")
-            with open(aac_path, "wb") as f:
+
+            # Сохраняем .wav
+            with open(wav_path, "wb") as f:
                 f.write(audio_bytes)
 
-            try:
-                audio = AudioSegment.from_file(aac_path, format="aac")
-            except Exception:
-                audio = AudioSegment.from_file(aac_path, format="m4a")
-
-            audio.export(wav_path, format="wav")
-
-            subprocess.run([
-                "ffmpeg", "-y", "-i", wav_path, "-c:a", "flac", flac_path
-            ], check=True)
+            # Конвертируем WAV → FLAC
+            sound = AudioSegment.from_wav(wav_path)
+            sound.export(flac_path, format="flac")
 
             timestamp = datetime.now(timezone.utc).isoformat()
-            upload_url = f"{BASE_URL}/stations/{BIRDWEATHER_STATION_TOKEN}/soundscapes?timestamp={timestamp}"
+            url = f"https://app.birdweather.com/api/v1/stations/{BIRDWEATHER_STATION_TOKEN}/soundscapes?timestamp={timestamp}"
 
             with open(flac_path, "rb") as f:
                 files = {"audio": ("input.flac", f, "audio/flac")}
-                response = requests.post(upload_url, files=files, timeout=15)
+                response = requests.post(url, files=files, timeout=15)
 
-            if response.status_code not in (200, 201):
-                logger.error(response.text)
-                return cors_response({"error": "Upload failed", "details": response.text}, 500)
+            if response.status_code != 200:
+                logger.error(f"BirdWeather API error: {response.text}")
+                return cors_response({"error": "BirdWeather API failed", "details": response.text}, 500)
 
-            det_url = f"{BASE_URL}/stations/{BIRDWEATHER_STATION_TOKEN}/detections?limit=1"
-            det_resp = requests.get(det_url, timeout=10)
-            if det_resp.status_code != 200:
-                return cors_response({"error": "Fetch detections failed", "details": det_resp.text}, 500)
+            result = response.json()
+            detections = result.get("detections", [])
 
-            det_json = det_resp.json().get("detections", [])
-            if not det_json:
-                return cors_response({"response": "⚠️ No bird sounds detected."})
+            if not detections:
+                return cors_response({"response": "⚠️ На аудио не обнаружено голосов птиц."})
 
-            best = max(det_json, key=lambda d: d.get("confidence", 0))
-            name = best.get("species", {}).get("common_name", "Unknown")
-            conf = round(best.get("confidence", 0) * 100, 1)
-            return cors_response({"response": f"1. Вид: {name}\n2. Уверенность: {conf}%\n3. Источник: BirdWeather"})
+            best = max(detections, key=lambda d: float(d.get("confidence", 0)))
+            name = best.get("common_name", "Неизвестно")
+            conf = round(float(best.get("confidence", 0)) * 100, 1)
+
+            return cors_response({"response": f"1. Вид: {name}\\n2. Уверенность: {conf}%\\n3. Источник: BirdWeather"})
 
     except Exception as e:
         logger.error(f"Audio error: {e}")
