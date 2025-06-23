@@ -1,11 +1,12 @@
-
 import os
+import io
 import base64
 import requests
 import logging
 import threading
 import time
 import tempfile
+import subprocess
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify, make_response
 
@@ -13,10 +14,11 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# === ENV variables ===
+# === ENV VARIABLES ===
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 BIRDWEATHER_STATION_TOKEN = os.getenv("BIRDWEATHER_STATION_TOKEN")
 
+# === CORS ===
 def cors_response(payload, status=200):
     resp = make_response(jsonify(payload), status)
     resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -24,6 +26,7 @@ def cors_response(payload, status=200):
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
     return resp
 
+# === KEEP-ALIVE ===
 def start_keep_alive():
     def loop():
         while True:
@@ -37,6 +40,7 @@ def start_keep_alive():
             time.sleep(300)
     threading.Thread(target=loop, daemon=True).start()
 
+# === ROUTES ===
 @app.route("/ping", methods=["GET", "OPTIONS"])
 def ping():
     if request.method == "OPTIONS":
@@ -63,28 +67,31 @@ def generate_image():
     if len(image_b64) > 4_000_000:
         return cors_response({"error": "Image size exceeds 4MB"}, 413)
 
-    payload = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [
-                    {"text": prompt},
-                    {"inline_data": {"mime_type": "image/jpeg", "data": image_b64}}
-                ]
-            }
-        ]
-    }
-
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-        resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "inline_data": {
+                                "mime_type": "image/jpeg",
+                                "data": image_b64
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
 
+        resp = requests.post(url, headers={"Content-Type": "application/json"}, json=payload, timeout=10)
         if resp.status_code != 200:
             return cors_response({"error": "Gemini API error", "details": resp.text}, resp.status_code)
 
         result = resp.json()
         text = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-
         if not text.strip():
             return cors_response({"error": "Empty response from Gemini"}, 502)
 
@@ -108,10 +115,24 @@ def generate_audio():
         audio_bytes = base64.b64decode(audio_b64)
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            wav_path = os.path.join(tmpdir, "input.wav")
             flac_path = os.path.join(tmpdir, "input.flac")
-            with open(flac_path, "wb") as f:
+
+            # Сохраняем WAV
+            with open(wav_path, "wb") as f:
                 f.write(audio_bytes)
 
+            # Конвертация WAV → FLAC через ffmpeg
+            subprocess.run([
+                "ffmpeg", "-y",
+                "-i", wav_path,
+                "-ac", "1",
+                "-ar", "16000",
+                "-sample_fmt", "s16",
+                flac_path
+            ], check=True)
+
+            # Отправка в BirdWeather
             timestamp = datetime.now(timezone.utc).isoformat()
             url = f"https://app.birdweather.com/api/v1/stations/{BIRDWEATHER_STATION_TOKEN}/soundscapes?timestamp={timestamp}"
 
@@ -120,25 +141,33 @@ def generate_audio():
                 response = requests.post(url, files=files, timeout=15)
 
             if response.status_code != 200:
-                logger.error(f"BirdWeather API error: {response.text}")
-                return cors_response({"error": "BirdWeather API failed", "details": response.text}, 500)
+                return cors_response({
+                    "error": "BirdWeather API failed",
+                    "details": response.text
+                }, 500)
 
             result = response.json()
             detections = result.get("detections", [])
 
             if not detections:
-                return cors_response({"response": "⚠️ На аудио не обнаружено голосов птиц."})
+                return cors_response({"response": "⚠️ Голос птицы не обнаружен."})
 
             best = max(detections, key=lambda d: float(d.get("confidence", 0)))
             name = best.get("common_name", "Неизвестно")
             conf = round(float(best.get("confidence", 0)) * 100, 1)
 
-            return cors_response({"response": f"1. Вид: {name}\n2. Уверенность: {conf}%\n3. Источник: BirdWeather"})
+            return cors_response({
+                "response": f"1. Вид: {name}\n2. Уверенность: {conf}%\n3. Источник: BirdWeather"
+            })
 
+    except subprocess.CalledProcessError as e:
+        logger.error(f"ffmpeg error: {e}")
+        return cors_response({"error": "Audio conversion failed", "details": str(e)}, 500)
     except Exception as e:
         logger.error(f"Audio error: {e}")
         return cors_response({"error": f"Server error: {e}"}, 500)
 
+# === RUN SERVER ===
 if __name__ == "__main__":
     start_keep_alive()
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
