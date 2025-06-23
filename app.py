@@ -6,6 +6,7 @@ import logging
 import threading
 import time
 import tempfile
+import tarfile
 import subprocess
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify, make_response
@@ -16,19 +17,30 @@ def ensure_ffmpeg():
     if not os.path.exists("ffmpeg/ffmpeg"):
         print("⬇️  Скачиваем ffmpeg...")
         os.makedirs("ffmpeg", exist_ok=True)
-        subprocess.run([
-            "wget",
-            "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz",
-            "-O",
-            "ffmpeg.tar.xz"
-        ], check=True)
-        subprocess.run(["tar", "-xf", "ffmpeg.tar.xz", "-C", "ffmpeg", "--strip-components=1"], check=True)
-        os.remove("ffmpeg.tar.xz")
+
+        # Скачиваем архив
+        url = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+        archive_path = "ffmpeg.tar.xz"
+
+        with requests.get(url, stream=True) as r:
+            r.raise_for_status()
+            with open(archive_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+        # Распаковываем
+        with tarfile.open(archive_path, "r:xz") as tar:
+            members = [m for m in tar.getmembers() if "/" in m.name and not m.isdir()]
+            for m in members:
+                name = os.path.basename(m.name)
+                m.name = name
+                tar.extract(m, path="ffmpeg")
+
+        os.remove(archive_path)
         print("✅ ffmpeg установлен")
 
     # Обновляем PATH
     os.environ["PATH"] = os.path.abspath("ffmpeg") + os.pathsep + os.environ["PATH"]
-
 ensure_ffmpeg()
 
 # === Flask-приложение ===
