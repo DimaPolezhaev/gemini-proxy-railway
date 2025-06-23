@@ -150,34 +150,39 @@ def generate_audio():
         audio_bytes = base64.b64decode(audio_b64)
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            aac_path = os.path.join(tmpdir, "input.aac")
-            flac_path = os.path.join(tmpdir, "input.flac")
-
-            with open(aac_path, "wb") as f:
+            # Сохраняем полученный файл как WAV
+            wav_input_path = os.path.join(tmpdir, "input.wav")
+            with open(wav_input_path, "wb") as f:
                 f.write(audio_bytes)
 
-            # Конвертация в FLAC
-            sound = AudioSegment.from_file(aac_path, format="aac")
+            # Конвертируем WAV → FLAC
+            from pydub import AudioSegment
+            flac_path = os.path.join(tmpdir, "converted.flac")
+            sound = AudioSegment.from_file(wav_input_path, format="wav")
             sound = sound.set_channels(1).set_frame_rate(16000).set_sample_width(2)
             sound.export(flac_path, format="flac")
 
-            # BirdWeather API
+            # Отправляем в BirdWeather
+            from datetime import datetime, timezone
+            BIRDWEATHER_TOKEN = os.getenv("BIRDWEATHER_STATION_TOKEN")
             timestamp = datetime.now(timezone.utc).isoformat()
-            url = f"https://app.birdweather.com/api/v1/stations/{BIRDWEATHER_STATION_TOKEN}/soundscapes?timestamp={timestamp}"
+            url = f"https://app.birdweather.com/api/v1/stations/{BIRDWEATHER_TOKEN}/soundscapes?timestamp={timestamp}"
 
             with open(flac_path, "rb") as f:
-                files = {"audio": ("input.flac", f, "audio/flac")}
+                files = {"audio": ("converted.flac", f, "audio/flac")}
                 response = requests.post(url, files=files, timeout=15)
 
             if response.status_code != 200:
-                logger.error(f"BirdWeather API error: {response.text}")
-                return cors_response({"error": "BirdWeather API failed", "details": response.text}, 500)
+                return cors_response({
+                    "error": "BirdWeather API failed",
+                    "details": response.text
+                }, 500)
 
             result = response.json()
             detections = result.get("detections", [])
 
             if not detections:
-                return cors_response({"response": "⚠️ На аудио не обнаружено голосов птиц."})
+                return cors_response({"response": "⚠️ На аудиозаписи не найдено голосов птиц."})
 
             best = max(detections, key=lambda d: float(d.get("confidence", 0)))
             name = best.get("common_name", "Неизвестно")
