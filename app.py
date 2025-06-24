@@ -5,50 +5,19 @@ import requests
 import logging
 import threading
 import time
-import tarfile
+import tempfile
+from datetime import datetime, timezone
 from flask import Flask, request, jsonify, make_response
+from pydub import AudioSegment
 
-# === Автоматическая загрузка ffmpeg ===
-def ensure_ffmpeg():
-    if not os.path.exists("ffmpeg/ffmpeg"):
-        print("⬇️  Скачиваем ffmpeg...")
-        os.makedirs("ffmpeg", exist_ok=True)
-
-        # Скачиваем архив
-        url = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
-        archive_path = "ffmpeg.tar.xz"
-
-        with requests.get(url, stream=True) as r:
-            r.raise_for_status()
-            with open(archive_path, "wb") as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
-
-        # Распаковываем
-        with tarfile.open(archive_path, "r:xz") as tar:
-            members = [m for m in tar.getmembers() if "/" in m.name and not m.isdir()]
-            for m in members:
-                name = os.path.basename(m.name)
-                m.name = name
-                tar.extract(m, path="ffmpeg")
-
-        os.remove(archive_path)
-        print("✅ ffmpeg установлен")
-
-    # Обновляем PATH
-    os.environ["PATH"] = os.path.abspath("ffmpeg") + os.pathsep + os.environ["PATH"]
-
-ensure_ffmpeg()
-
-# === Flask-приложение ===
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# === Переменные окружения ===
+# ENV-переменные
+BIRDWEATHER_TOKEN = os.getenv("BIRDWEATHER_STATION_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# === CORS ===
 def cors_response(payload, status=200):
     resp = make_response(jsonify(payload), status)
     resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -56,7 +25,6 @@ def cors_response(payload, status=200):
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
     return resp
 
-# === Keep-alive для Railway ===
 def start_keep_alive():
     def loop():
         while True:
@@ -70,8 +38,6 @@ def start_keep_alive():
             time.sleep(300)
     threading.Thread(target=loop, daemon=True).start()
 
-# === Роуты ===
-
 @app.route("/ping", methods=["GET", "OPTIONS"])
 def ping():
     if request.method == "OPTIONS":
@@ -83,6 +49,56 @@ def home():
     if request.method == "OPTIONS":
         return cors_response({})
     return cors_response({"status": "✅ Server is running"})
+
+@app.route("/generate_audio", methods=["POST", "OPTIONS"])
+def generate_audio():
+    if request.method == "OPTIONS":
+        return cors_response({})
+
+    data = request.get_json(silent=True) or {}
+    audio_b64 = data.get("audio_base64")
+    if not audio_b64:
+        return cors_response({"error": "audio_base64 not provided"}, 400)
+
+    try:
+        audio_bytes = base64.b64decode(audio_b64)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            flac_path = os.path.join(tmpdir, "input.flac")
+
+            # Сохраняем как FLAC
+            with open(flac_path, "wb") as f:
+                f.write(audio_bytes)
+
+            # BirdWeather API
+            timestamp = datetime.now(timezone.utc).isoformat()
+            url = f"https://app.birdweather.com/api/v1/stations/{BIRDWEATHER_TOKEN}/soundscapes?timestamp={timestamp}"
+
+            with open(flac_path, "rb") as f:
+                files = {"audio": ("input.flac", f, "audio/flac")}
+                response = requests.post(url, files=files, timeout=15)
+
+            if response.status_code != 200:
+                logger.error(f"BirdWeather API error: {response.text}")
+                return cors_response({"error": "BirdWeather API failed", "details": response.text}, 500)
+
+            result = response.json()
+            detections = result.get("detections", [])
+
+            if not detections:
+                return cors_response({"response": "⚠️ Голоса птиц не обнаружены."})
+
+            best = max(detections, key=lambda d: float(d.get("confidence", 0)))
+            name = best.get("common_name", "Неизвестно")
+            conf = round(float(best.get("confidence", 0)) * 100, 1)
+
+            return cors_response({
+                "response": f"1. Вид: {name}\n2. Уверенность: {conf}%\n3. Источник: BirdWeather"
+            })
+
+    except Exception as e:
+        logger.error(f"Audio error: {e}")
+        return cors_response({"error": f"Server error: {e}"}, 500)
 
 @app.route("/generate", methods=["POST", "OPTIONS"])
 def generate_image():
@@ -104,10 +120,7 @@ def generate_image():
                 "role": "user",
                 "parts": [
                     {"text": prompt},
-                    {"inline_data": {
-                        "mime_type": "image/jpeg",
-                        "data": image_b64
-                    }}
+                    {"inline_data": {"mime_type": "image/jpeg", "data": image_b64}}
                 ]
             }
         ]
@@ -122,7 +135,6 @@ def generate_image():
 
         result = resp.json()
         text = result.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-
         if not text.strip():
             return cors_response({"error": "Empty response from Gemini"}, 502)
 
